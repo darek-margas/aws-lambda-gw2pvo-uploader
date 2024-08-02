@@ -1,0 +1,9 @@
+{
+  "gw_station_id": "XXXX",
+  "gw_account": "email@example.com",
+  "gw_password": "XXXX",
+  "pvo_system_id": "XXXXX",
+  "pvo_api_key": "XXXXXXXXXX",
+  "log": "warning",
+  "skip_offline": "no"
+}
