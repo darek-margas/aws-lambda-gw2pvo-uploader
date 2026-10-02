@@ -1,0 +1,53 @@
+name: Build Python 3.13 release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION
+      - requirements-layer.txt
+      - lambda_function.py
+      - gw2pvo/gw_api.py
+      - gw2pvo/pvo_api.py
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build packages
+        shell: bash
+        run: |
+          set -eux
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          rm -rf build
+          mkdir -p build/layer/python/gw2pvo build/function
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-layer.txt -t build/layer/python
+          cp gw2pvo/gw_api.py gw2pvo/pvo_api.py build/layer/python/gw2pvo/
+          touch build/layer/python/gw2pvo/__init__.py
+          cp lambda_function.py build/function/
+          (cd build/layer && zip -qr "../../gw2pvo-$VERSION.zip" python)
+          (cd build/function && zip -qr "../../GW2PVO-$VERSION.zip" .)
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release create "$VERSION" --target "$GITHUB_SHA" --title "Python 3.13" --notes "Python 3.13 Lambda build with SEMS+ GoodWe API."
+          fi
+          gh release upload "$VERSION" "gw2pvo-$VERSION.zip" "GW2PVO-$VERSION.zip" --clobber
