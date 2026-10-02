@@ -50,4 +50,4 @@ jobs:
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
             gh release create "$VERSION" --target "$GITHUB_SHA" --title "Python 3.13" --notes "Python 3.13 Lambda build with SEMS+ GoodWe API."
           fi
-          gh release upload "$VERSION" "gw2pvo-$VERSION.zip" "GW2PVO-$VERSION.zip" --clobber
+          gh release upload "$VERSION" "gw2pvo-layer-$VERSION.zip" "GW2PVO-$VERSION.zip" --clobber
