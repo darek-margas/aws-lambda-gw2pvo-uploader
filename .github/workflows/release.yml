@@ -38,7 +38,7 @@ jobs:
           cp gw2pvo/gw_api.py gw2pvo/pvo_api.py build/layer/python/gw2pvo/
           touch build/layer/python/gw2pvo/__init__.py
           cp lambda_function.py build/function/
-          (cd build/layer && zip -qr "../../gw2pvo-$VERSION.zip" python)
+          (cd build/layer && zip -qr "../../gw2pvo-layer-$VERSION.zip" python)
           (cd build/function && zip -qr "../../GW2PVO-$VERSION.zip" .)
 
       - name: Publish release
