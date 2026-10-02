@@ -1,7 +1,8 @@
+# Python 3.13 Lambda. GoodWe access uses the SEMS+ client in gw2pvo/gw_api.py.
 import json
 import logging
 from datetime import datetime
-from gw2pvo import gw_api, pvo_api, ds_api, netatmo_api
+from gw2pvo import gw_api, pvo_api
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,14 +36,8 @@ def get_config(event):
         'gw_password': event.get('gw_password'),
         'pvo_system_id': event.get('pvo_system_id'),
         'pvo_api_key': event.get('pvo_api_key'),
-        'darksky_api_key': event.get('darksky_api_key'),
         'pv_voltage': event.get('pv_voltage', False),
         'skip_offline': event.get('skip_offline', False),
-        'netatmo_username': event.get('netatmo_username'),
-        'netatmo_password': event.get('netatmo_password'),
-        'netatmo_client_id': event.get('netatmo_client_id'),
-        'netatmo_client_secret': event.get('netatmo_client_secret'),
-        'netatmo-device-id': event.get('netatmo-device-id'),
     }
 
 def run_once(config):
@@ -54,15 +49,8 @@ def run_once(config):
     if config['skip_offline'] and data['status'] == 'Offline':
         logger.info("Skipped upload as the inverter is offline")
         return {"message": "Skipped upload (offline)"}
-
-    # Get temperature if Dark Sky API key is provided
-    if config['darksky_api_key']:
-        ds = ds_api.DarkSkyApi(config['darksky_api_key'])
-        temperature = ds.get_temperature(data['latitude'], data['longitude'])
-        if temperature:
-            logger.info(f"Current local temperature is {temperature:.1f} °C")
-            data['temperature'] = temperature
-
+    # Weather lookup was removed in the Python 3.13 Lambda. PVOutput still
+    # receives inverter temperature from the GoodWe data when available.
     voltage = data['grid_voltage']
     if config['pv_voltage']:
         voltage = data['pv_voltage']
