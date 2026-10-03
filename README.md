@@ -1,10 +1,12 @@
 # AWS Lambda GoodWe SEMS to PVOutput uploader
 
-Send GoodWe inverter data from SEMS directly to PVOutput with a tiny scheduled AWS Lambda.
+This project provides a lightweight, fully cloud-hosted bridge for sending GoodWe inverter data to PVOutput.
 
-This is a fully cloud-to-cloud setup: nothing has to run at home. No Raspberry Pi, NAS, Home Assistant, Docker container or always-on server is required. AWS Lambda wakes up on schedule, reads the current GoodWe data, uploads it to PVOutput, and stops again. At this workload it is effectively free in normal low-volume use.
+It runs as an AWS Lambda function, so there is no server, Raspberry Pi, Home Assistant instance or other always-on device required at home. Once deployed, AWS takes care of running it on schedule and the normal workload fits comfortably within the Lambda free tier, making the service effectively free to operate.
 
-The main reason for keeping this as a small standalone Lambda is control. You own the code, the upload interval and the mapping into PVOutput, without depending on a permanently running local service.
+The uploader retrieves production data from GoodWe's cloud service and publishes it to PVOutput using the normal PVOutput status interface. This turned out to be particularly useful after changes to the older GoodWe/PVOutput integration path left a number of existing setups without a reliable way of continuing uploads. Rather than depending on a vendor appliance or a local polling service, the entire data path remains in the cloud and under the user's control.
+
+The project is deliberately small and transparent. Configuration is handled through Lambda environment variables, there are no external servers to maintain, and the function can be inspected, modified or extended easily. It is intended for people who want their GoodWe data in PVOutput but would rather not dedicate local infrastructure just to keep a simple telemetry feed alive.
 
 ## GoodWe API status
 
