@@ -47,7 +47,15 @@ jobs:
         shell: bash
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
+          PRERELEASE=""
+          TITLE="Python 3.13"
+          case "$VERSION" in
+            *alpha*|*beta*|*rc*)
+              PRERELEASE="--prerelease"
+              TITLE="Python 3.13 ($VERSION)"
+              ;;
+          esac
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release create "$VERSION" --target "$GITHUB_SHA" --title "Python 3.13" --notes "Python 3.13 Lambda build with SEMS+ GoodWe API."
+            gh release create "$VERSION" --target "$GITHUB_SHA" --title "$TITLE" $PRERELEASE --notes "Python 3.13 Lambda build with SEMS+ GoodWe API."
           fi
           gh release upload "$VERSION" "gw2pvo-layer-$VERSION.zip" "GW2PVO-$VERSION.zip" --clobber

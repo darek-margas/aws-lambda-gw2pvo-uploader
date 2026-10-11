@@ -30,6 +30,11 @@ class GoodWeApi:
     @staticmethod
     def statusText(status):
         labels = {-1: "Offline", 0: "Waiting", 1: "Normal", 2: "Fault"}
+        # The V3 API may return the status as a string, e.g. "-1".
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            pass
         return labels.get(status, "Unknown")
 
     @staticmethod
@@ -39,7 +44,10 @@ class GoodWeApi:
         if isinstance(value, (int, float)):
             return float(value)
         try:
-            return float(str(value).rstrip(unit))
+            text = str(value).strip()
+            if text.endswith(unit.strip()):
+                text = text[: len(text) - len(unit.strip())]
+            return float(text.strip())
         except (TypeError, ValueError) as exp:
             logging.warning(exp)
             return 0
@@ -50,7 +58,7 @@ class GoodWeApi:
             key = "vpv" + str(i)
             if key not in data:
                 continue
-            value = data[key]
+            value = self.parseValue(data[key], "V")
             if value and value < 6553:
                 pv_voltages.append(value)
         return round(sum(pv_voltages), 1)
@@ -231,9 +239,9 @@ class GoodWeApi:
 
         if has_statistics:
             stats = data.get("energeStatisticsCharts") or {}
-            result["eday_kwh"] = float(stats.get("sum", 0) or 0)
-            result["consumptionOfLoad"] = float(
-                stats.get("consumptionOfLoad", 0) or 0
+            result["eday_kwh"] = self.parseValue(stats.get("sum"), "kWh")
+            result["consumptionOfLoad"] = self.parseValue(
+                stats.get("consumptionOfLoad"), "kWh"
             )
 
         if has_powerflow:
@@ -247,18 +255,18 @@ class GoodWeApi:
             status = self.statusText(inverter_data.get("status"))
             if status == "Normal":
                 result["status"] = status
-                result["pgrid_w"] += inverter_data.get("out_pac", 0) or 0
+                result["pgrid_w"] += self.parseValue(inverter_data.get("out_pac"), "W")
                 result["grid_voltage"] += self.parseValue(
                     inverter_data.get("output_voltage", 0), "V"
                 )
-                result["itemp"] += inverter_data.get("tempperature", 0) or 0
+                result["itemp"] += self.parseValue(inverter_data.get("tempperature"), "C")
                 result["pv_voltage"] += self.calcPvVoltage(inverter_data.get("d") or {})
                 count += 1
 
             if not has_statistics:
-                result["eday_kwh"] += inverter_data.get("eday", 0) or 0
+                result["eday_kwh"] += self.parseValue(inverter_data.get("eday"), "kWh")
 
-            result["etotal_kwh"] += inverter_data.get("etotal", 0) or 0
+            result["etotal_kwh"] += self.parseValue(inverter_data.get("etotal"), "kWh")
 
         if count > 0:
             result["grid_voltage"] /= count
@@ -273,7 +281,7 @@ class GoodWeApi:
                     (data.get("powerflow") or {}).get("pv", 0), "(W)"
                 )
             else:
-                result["pgrid_w"] = inverter_data.get("out_pac", 0) or 0
+                result["pgrid_w"] = self.parseValue(inverter_data.get("out_pac"), "W")
 
             result["grid_voltage"] = self.parseValue(
                 inverter_data.get("output_voltage", 0), "V"
@@ -348,7 +356,7 @@ class GoodWeApi:
         for sample in pacs:
             parsed_date = datetime.strptime(sample["date"], "%m/%d/%Y %H:%M:%S")
             next_hours = parsed_date.hour + parsed_date.minute / 60
-            pgrid_w = sample["pac"]
+            pgrid_w = self.parseValue(sample.get("pac"), "W")
 
             if pgrid_w > 0:
                 kwh += pgrid_w / 1000 * (next_hours - hours)
