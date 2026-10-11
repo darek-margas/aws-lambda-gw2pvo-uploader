@@ -26,6 +26,8 @@ The public Python interface was deliberately kept compatible with the original c
 
 Since around late September 2026 the V3 endpoint returns some numeric fields as strings (for example `out_pac` as `"0"` and inverter `status` as `"-1"`). On `py3.13.1` and earlier this shows up as an `Unknown` status in the log followed by `type str doesn't define __round__ method`. From `py3.13.2-beta1` all numeric GoodWe fields are parsed to numbers before use.
 
+The SEMS+ login may also return a gateway API host such as `https://au-gateway.semsportal.com/web/sems`. That gateway serves the plant API under `sems-plant/api/`, so calling `v3/...` directly on it fails with `404 Not Found`. From `py3.13.2-beta2` the client tries the gateway with the `sems-plant/api/` prefix first, then falls back to the legacy regional host (`https://<region>.semsportal.com/api/`). It no longer retries 404s, so a failure is reported before the Lambda timeout is reached.
+
 ## Background
 
 The project was initially inspired by Mark Ruys' `gw2pvo` project and evolved from my fork, with later changes for AWS Lambda and newer GoodWe SEMS access.

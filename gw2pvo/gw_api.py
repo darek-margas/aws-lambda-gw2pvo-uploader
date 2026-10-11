@@ -25,6 +25,7 @@ class GoodWeApi:
         self.account = account
         self.password = password
         self.base_url = self.FALLBACK_API
+        self.api_bases = [self.FALLBACK_API]
         self.session = None
 
     @staticmethod
@@ -133,12 +134,22 @@ class GoodWeApi:
         api = body.get("api") or data.get("api")
         region = body.get("region") or data.get("region")
 
+        # Since 2026 the login may return a SEMS+ gateway such as
+        # https://au-gateway.semsportal.com/web/sems, which serves the plant
+        # API under sems-plant/api/. The legacy regional host is kept as a
+        # fallback in case the gateway route is not available.
+        self.api_bases = []
         if api:
-            self.base_url = str(api).rstrip("/") + "/"
-        elif region:
-            self.base_url = "https://{}.semsportal.com/api/".format(region)
-        else:
-            self.base_url = self.FALLBACK_API
+            api = str(api).rstrip("/")
+            if "gateway" in api:
+                self.api_bases.append(api + "/sems-plant/api/")
+            else:
+                self.api_bases.append(api + "/")
+        if region:
+            self.api_bases.append("https://{}.semsportal.com/api/".format(region))
+        self.api_bases.append(self.FALLBACK_API)
+        self.base_url = self.api_bases[0]
+        logging.info("SEMS+ login: api=%s region=%s hosts=%s", api, region, self.api_bases)
 
         self.session = {
             "uid": uid,
@@ -150,7 +161,7 @@ class GoodWeApi:
         }
         if region:
             self.session["region"] = str(region)
-        self.session["api"] = self.base_url.rstrip("/")
+        self.session["api"] = api or self.base_url.rstrip("/")
 
     def _headers(self):
         if self.session is None:
@@ -165,51 +176,88 @@ class GoodWeApi:
             ),
         }
 
+    class _RouteNotFound(Exception):
+        pass
+
+    def _post(self, base_url, url, payload):
+        response = requests.post(
+            base_url + url,
+            headers=self._headers(),
+            data=payload,
+            timeout=10,
+        )
+        if response.status_code == 404:
+            raise self._RouteNotFound("404 Not Found for url: {}".format(response.url))
+        response.raise_for_status()
+        body = response.json()
+        logging.debug(body)
+
+        # The SEMS+ gateway answers unknown routes with HTTP 200.
+        if "Route Not Found" in str(body.get("error_msg", "")):
+            raise self._RouteNotFound(
+                "{} for url: {}".format(body["error_msg"], response.url)
+            )
+        return body
+
     def call(self, url, payload):
         last_error = None
 
-        for attempt in range(1, 4):
-            try:
-                if self.session is None:
-                    self._login()
+        if self.session is None:
+            self._login()
 
-                response = requests.post(
-                    self.base_url + url,
-                    headers=self._headers(),
-                    data=payload,
-                    timeout=10,
-                )
-                response.raise_for_status()
-                body = response.json()
-                logging.debug(body)
+        for base_url in list(self.api_bases):
+            for attempt in range(1, 3):
+                try:
+                    if self.session is None:
+                        self._login()
 
-                if self._success(body.get("code")) and body.get("data") is not None:
-                    return body["data"]
+                    body = self._post(base_url, url, payload)
 
-                code = body.get("code")
-                message = (
-                    body.get("description")
-                    or body.get("msg")
-                    or body.get("message")
-                    or "unknown GoodWe API error"
-                )
+                    if self._success(body.get("code")) and body.get("data") is not None:
+                        # Remember the working host for subsequent calls.
+                        if base_url in self.api_bases:
+                            self.api_bases.remove(base_url)
+                        self.api_bases.insert(0, base_url)
+                        self.base_url = base_url
+                        return body["data"]
 
-                if code in (100001, 100002, "100001", "100002") or "token" in str(message).lower():
-                    self.session = None
-                    continue
+                    code = body.get("code")
+                    message = (
+                        body.get("description")
+                        or body.get("msg")
+                        or body.get("message")
+                        or body.get("errorMsg")
+                        or "unknown GoodWe API error"
+                    )
+                    last_error = RuntimeError(
+                        "GoodWe API error at {} (code {}): {}".format(
+                            base_url, code, message
+                        )
+                    )
+                    logging.warning(last_error)
 
-                raise RuntimeError(
-                    "Failed to call GoodWe API (code {}): {}".format(code, message)
-                )
+                    auth_error = (
+                        code in (100001, 100002, "100001", "100002", "C0602")
+                        or "token" in str(message).lower()
+                    )
+                    if auth_error and attempt == 1:
+                        self.session = None
+                        continue
+                    break
 
-            except (requests.exceptions.RequestException, ValueError, RuntimeError) as exp:
-                last_error = exp
-                logging.warning(exp)
+                except self._RouteNotFound as exp:
+                    last_error = exp
+                    logging.warning(exp)
+                    break
 
-            time.sleep(attempt ** 3)
+                except (requests.exceptions.RequestException, ValueError) as exp:
+                    last_error = exp
+                    logging.warning(exp)
+                    if attempt == 1:
+                        time.sleep(2)
 
         raise RuntimeError(
-            "Failed to call GoodWe API after retries: {}".format(last_error)
+            "Failed to call GoodWe API on all hosts: {}".format(last_error)
         )
 
     def getCurrentReadings(self):
