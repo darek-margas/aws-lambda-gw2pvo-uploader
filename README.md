@@ -24,6 +24,8 @@ That means this is more than just changing an endpoint name or bumping an API ve
 
 The public Python interface was deliberately kept compatible with the original code: `GoodWeApi(...).getCurrentReadings()` still returns the data expected by the Lambda, so the migration did not require rewriting the surrounding PVOutput logic.
 
+Since around late September 2026 the V3 endpoint returns some numeric fields as strings (for example `out_pac` as `"0"` and inverter `status` as `"-1"`). On `py3.13.1` and earlier this shows up as an `Unknown` status in the log followed by `type str doesn't define __round__ method`. From `py3.13.2-beta1` all numeric GoodWe fields are parsed to numbers before use.
+
 ## Background
 
 The project was initially inspired by Mark Ruys' `gw2pvo` project and evolved from my fork, with later changes for AWS Lambda and newer GoodWe SEMS access.
@@ -37,3 +39,12 @@ The release layer is rebuilt from source with `requirements-layer.txt`; the old 
 Dark Sky support was removed from the current Lambda path.
 
 Credentials are supplied at runtime by the Lambda event and are not stored in this repository.
+
+## Releases
+
+Releases are built by GitHub Actions (`.github/workflows/release.yml`) on every push to `main` that touches the Lambda code, the layer requirements or `VERSION`. The release tag is taken from the `VERSION` file, and each release carries two assets:
+
+- `gw2pvo-layer-<version>.zip` – Lambda layer with `gw2pvo` and its dependencies
+- `GW2PVO-<version>.zip` – the Lambda function code
+
+Versions containing `alpha`, `beta` or `rc` (for example `py3.13.2-beta1`) are published as GitHub prereleases. To cut a release, bump `VERSION` and push to `main`.
