@@ -18,6 +18,7 @@ class GoodWeApi:
 
     LOGIN_URL = "https://eu-semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login"
     FALLBACK_API = "https://www.semsportal.com/api/"
+    FALLBACK_WEB_API = "https://eu-gateway.semsportal.com/web/sems"
     CLIENT = "semsPlusWeb"
 
     def __init__(self, system_id, account, password):
@@ -26,6 +27,7 @@ class GoodWeApi:
         self.password = password
         self.base_url = self.FALLBACK_API
         self.api_bases = [self.FALLBACK_API]
+        self.web_api = self.FALLBACK_WEB_API
         self.session = None
 
     @staticmethod
@@ -149,6 +151,14 @@ class GoodWeApi:
             self.api_bases.append("https://{}.semsportal.com/api/".format(region))
         self.api_bases.append(self.FALLBACK_API)
         self.base_url = self.api_bases[0]
+
+        # Base for the SEMS+ Web plant API (sems-plant/api/...).
+        if api and "/web/sems" in api:
+            self.web_api = api
+        elif region:
+            self.web_api = "https://{}-gateway.semsportal.com/web/sems".format(region)
+        else:
+            self.web_api = self.FALLBACK_WEB_API
         logging.info("SEMS+ login: api=%s region=%s hosts=%s", api, region, self.api_bases)
 
         self.session = {
@@ -260,8 +270,255 @@ class GoodWeApi:
             "Failed to call GoodWe API on all hosts: {}".format(last_error)
         )
 
+    # --- SEMS+ Web plant API -------------------------------------------------
+    #
+    # Since 23 Sep 2026 the legacy GetMonitorDetailByPowerstationId endpoint
+    # returns success with no inverter data. The SEMS+ Web UI reads the plant
+    # through sems-plant/api/... on the regional gateway instead; the endpoints
+    # and factor codes below follow the working goodwe-sems-home-assistant
+    # integration (TimSoethout/goodwe-sems-home-assistant, sems_api.py).
+
+    WEB_INVERTER_TYPES = ("INVERTER", "ENERGY_STORAGE_INTEGRATED_CABINET")
+
+    def _web(self, method, path, params=None, body=None):
+        last_error = None
+
+        for attempt in range(1, 3):
+            if self.session is None:
+                self._login()
+
+            headers = self._headers()
+            headers["Content-Type"] = "application/json"
+            response = requests.request(
+                method,
+                self.web_api + path,
+                headers=headers,
+                params=params,
+                json=body,
+                timeout=10,
+            )
+            response.raise_for_status()
+            result = response.json()
+            logging.debug("%s %s: %s", method, path, result)
+
+            code = result.get("code")
+            if self._success(code):
+                return result.get("data")
+
+            message = (
+                result.get("description")
+                or result.get("msg")
+                or result.get("errorMsg")
+                or result.get("error_msg")
+                or "unknown GoodWe API error"
+            )
+            last_error = RuntimeError(
+                "GoodWe SEMS+ {} failed (code {}): {}".format(path, code, message)
+            )
+            if str(code) in ("100002", "C0602") and attempt == 1:
+                self.session = None
+                continue
+            break
+
+        raise last_error
+
+    @staticmethod
+    def _flatten_factors(groups):
+        factors = {}
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                continue
+            for factor in group.get("factors") or []:
+                if isinstance(factor, dict) and factor.get("data") is not None:
+                    factors[factor.get("code")] = factor["data"]
+        return factors
+
+    def _web_devices(self):
+        data = self._web(
+            "GET",
+            "/sems-plant/api/stations/device/all-status",
+            params={"stationId": self.system_id},
+        )
+        devices = []
+        for group in (data or {}).get("deviceDetailList") or []:
+            device_type = group.get("deviceType")
+            if device_type not in self.WEB_INVERTER_TYPES:
+                continue
+            for status_group in group.get("statusDetailList") or []:
+                detail_map = status_group.get("detailMap") or {}
+                for sn in status_group.get("snList") or []:
+                    device = dict(detail_map.get(sn) or {})
+                    device.update(
+                        {
+                            "sn": sn,
+                            "deviceType": device_type,
+                            "status": status_group.get("status"),
+                        }
+                    )
+                    devices.append(device)
+        return devices
+
+    def _web_device_factors(self, kind, device):
+        return self._flatten_factors(
+            self._web(
+                "GET",
+                "/sems-plant/api/equipments/{}/{}".format(device["sn"], kind),
+                params={"deviceType": device["deviceType"], "pwId": self.system_id},
+            )
+        )
+
+    def _web_today_statistics(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        data = self._web(
+            "POST",
+            "/sems-plant/api/stations/statistics",
+            body={
+                "stationId": self.system_id,
+                "isReport": False,
+                "items": ["proSystemTotalStats", "proConsumStats"],
+                "dimension": "day",
+                "startTime": today + " 00:00:00",
+                "endTime": today + " 23:59:59",
+            },
+        ) or {}
+
+        stats = {}
+        for item in data.get("dataList") or []:
+            values = [
+                self.parseValue(point.get("val"), "")
+                for point in item.get("statisticsList") or []
+                if isinstance(point, dict) and point.get("val") is not None
+            ]
+            if values:
+                stats[item.get("item")] = sum(values)
+        for summary, item in (
+            ("production", "proSystemTotalStats"),
+            ("proConsum", "proConsumStats"),
+        ):
+            if item not in stats and data.get(summary) is not None:
+                stats[item] = self.parseValue(data.get(summary), "")
+        return stats
+
     def getCurrentReadings(self):
         """Download the most recent readings from the GoodWe API."""
+        try:
+            return self._getWebReadings()
+        except (requests.exceptions.RequestException, ValueError, RuntimeError) as exp:
+            logging.warning("SEMS+ Web readings failed, trying legacy API: %s", exp)
+            return self._getLegacyReadings()
+
+    def _getWebReadings(self):
+        if self.session is None:
+            self._login()
+
+        result = {
+            "status": "Unknown",
+            "itemp": 0,
+            "pgrid_w": 0,
+            "etotal_kwh": 0,
+            "grid_voltage": 0,
+            "pv_voltage": 0,
+            "latitude": None,
+            "longitude": None,
+            "eday_kwh": 0,
+            "consumptionOfLoad": None,
+            "load": None,
+        }
+
+        devices = self._web_devices()
+        if not devices:
+            raise RuntimeError("SEMS+ returned no inverters for this station")
+
+        count = 0
+        eday_inverters = 0
+        statuses = []
+        for device in devices:
+            status = self.statusText(device.get("status"))
+            statuses.append(status)
+
+            try:
+                telemetry = self._web_device_factors("telemetry", device)
+            except (requests.exceptions.RequestException, ValueError, RuntimeError) as exp:
+                logging.warning("SEMS+ telemetry for %s failed: %s", device["sn"], exp)
+                telemetry = {}
+            try:
+                counters = self._web_device_factors("telecounting", device)
+            except (requests.exceptions.RequestException, ValueError, RuntimeError) as exp:
+                logging.warning("SEMS+ counters for %s failed: %s", device["sn"], exp)
+                counters = {}
+
+            eday_inverters += self.parseValue(counters.get("proPvStatsToday"), "")
+            result["etotal_kwh"] += self.parseValue(counters.get("proPvStatsTotal"), "")
+
+            if status == "Normal":
+                # SEMS+ reports power in kW.
+                result["pgrid_w"] += self.parseValue(telemetry.get("pAc"), "") * 1000
+                result["grid_voltage"] += self.parseValue(
+                    telemetry.get("Vac", telemetry.get("PHASE-A:Vac")), ""
+                )
+                result["itemp"] += self.parseValue(telemetry.get("Temperature"), "")
+                result["pv_voltage"] += self.calcPvVoltage(
+                    {
+                        "vpv{}".format(i): telemetry.get("MPPT-{}:Vpv".format(i))
+                        for i in range(1, 5)
+                    }
+                )
+                count += 1
+
+        flow = {}
+        try:
+            flow = self._web(
+                "GET",
+                "/sems-plant/api/stations/flow",
+                params={"stationId": self.system_id},
+            ) or {}
+        except (requests.exceptions.RequestException, ValueError, RuntimeError) as exp:
+            logging.warning("SEMS+ station flow failed: %s", exp)
+
+        if flow.get("pConsum") is not None:
+            result["load"] = abs(self.parseValue(flow.get("pConsum"), "")) * 1000
+
+        if count > 0:
+            result["status"] = "Normal"
+            result["grid_voltage"] /= count
+            result["pv_voltage"] /= count
+            result["itemp"] /= count
+        else:
+            result["status"] = statuses[0]
+            pv = flow.get("pSystem", flow.get("pAc"))
+            result["pgrid_w"] = self.parseValue(pv, "") * 1000
+
+        stats = {}
+        try:
+            stats = self._web_today_statistics()
+        except (requests.exceptions.RequestException, ValueError, RuntimeError) as exp:
+            logging.warning("SEMS+ station statistics failed: %s", exp)
+
+        if "proSystemTotalStats" in stats:
+            result["eday_kwh"] = stats["proSystemTotalStats"]
+        else:
+            result["eday_kwh"] = eday_inverters
+        if "proConsumStats" in stats:
+            result["consumptionOfLoad"] = stats["proConsumStats"]
+
+        self._logReadings(result)
+        return result
+
+    def _logReadings(self, result):
+        message = (
+            "{status}, {pgrid_w} W now, Load {load} W now, "
+            "{eday_kwh} kWh today, {etotal_kwh} kWh all time, "
+            "{consumptionOfLoad} kWh used today {grid_voltage} V grid, "
+            "{pv_voltage} V PV, {itemp} C"
+        ).format(**result)
+
+        if result["status"] in ("Normal", "Offline"):
+            logging.info(message)
+        else:
+            logging.warning(message)
+
+    def _getLegacyReadings(self):
+        """Readings from the legacy V3 monitor endpoint (empty since Sep 2026)."""
 
         data = self.call(
             "v3/PowerStation/GetMonitorDetailByPowerstationId",
@@ -336,18 +593,7 @@ class GoodWeApi:
             )
             result["pv_voltage"] = self.calcPvVoltage(inverter_data.get("d") or {})
 
-        message = (
-            "{status}, {pgrid_w} W now, Load {load} W now, "
-            "{eday_kwh} kWh today, {etotal_kwh} kWh all time, "
-            "{consumptionOfLoad} kWh used today {grid_voltage} V grid, "
-            "{pv_voltage} V PV, {itemp} C"
-        ).format(**result)
-
-        if result["status"] in ("Normal", "Offline"):
-            logging.info(message)
-        else:
-            logging.warning(message)
-
+        self._logReadings(result)
         return result
 
     def getLocation(self):

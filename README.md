@@ -28,6 +28,16 @@ Since around late September 2026 the V3 endpoint returns some numeric fields as 
 
 The SEMS+ login may also return a gateway API host such as `https://au-gateway.semsportal.com/web/sems`. That gateway serves the plant API under `sems-plant/api/`, so calling `v3/...` directly on it fails with `404 Not Found`. From `py3.13.2-beta2` the client tries the gateway with the `sems-plant/api/` prefix first, then falls back to the legacy regional host (`https://<region>.semsportal.com/api/`). It no longer retries 404s, so a failure is reported before the Lambda timeout is reached.
 
+Since 23 September 2026 the legacy V3 monitor endpoint returns success but no inverter data (all readings `0`, status `Unknown`). From `py3.13.2-beta3` the readings come from the SEMS+ Web plant API on the regional gateway, the same API the SEMS+ web UI and the [goodwe-sems-home-assistant](https://github.com/TimSoethout/goodwe-sems-home-assistant) integration use:
+
+- `GET sems-plant/api/stations/device/all-status`: inverters and their status
+- `GET sems-plant/api/equipments/{sn}/telemetry`: AC power, grid voltage, temperature, PV voltages
+- `GET sems-plant/api/equipments/{sn}/telecounting`: energy today and lifetime per inverter
+- `GET sems-plant/api/stations/flow`: station power flow, used for load
+- `POST sems-plant/api/stations/statistics`: today's generation and consumption
+
+If the SEMS+ Web calls fail, the client falls back to the legacy endpoint.
+
 ## Background
 
 The project was initially inspired by Mark Ruys' `gw2pvo` project and evolved from my fork, with later changes for AWS Lambda and newer GoodWe SEMS access.
