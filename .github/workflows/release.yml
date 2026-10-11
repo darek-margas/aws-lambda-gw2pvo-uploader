@@ -10,6 +10,7 @@ on:
       - lambda_function.py
       - gw2pvo/gw_api.py
       - gw2pvo/pvo_api.py
+      - RELEASE_NOTES.md
       - .github/workflows/release.yml
   workflow_dispatch:
 
@@ -48,14 +49,24 @@ jobs:
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
           PRERELEASE=""
-          TITLE="Python 3.13"
           case "$VERSION" in
-            *alpha*|*beta*|*rc*)
-              PRERELEASE="--prerelease"
-              TITLE="Python 3.13 ($VERSION)"
-              ;;
+            *alpha*|*beta*|*rc*) PRERELEASE="--prerelease" ;;
           esac
+
+          # RELEASE_NOTES.md: the first "## " heading is the release title,
+          # the rest is the description.
+          NOTES_FILE="$RUNNER_TEMP/notes.md"
+          TITLE="Python 3.13 ($VERSION)"
+          if [ -s RELEASE_NOTES.md ]; then
+            HEADING="$(grep -m1 '^## ' RELEASE_NOTES.md | sed 's/^## *//')"
+            [ -n "$HEADING" ] && TITLE="$HEADING"
+            sed '0,/^## /{/^## /d}' RELEASE_NOTES.md > "$NOTES_FILE"
+          else
+            echo "Python 3.13 Lambda build with SEMS+ GoodWe API." > "$NOTES_FILE"
+          fi
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release create "$VERSION" --target "$GITHUB_SHA" --title "$TITLE" $PRERELEASE --notes "Python 3.13 Lambda build with SEMS+ GoodWe API."
+            gh release create "$VERSION" --target "$GITHUB_SHA" --title "$TITLE" $PRERELEASE --notes-file "$NOTES_FILE"
+          else
+            gh release edit "$VERSION" --title "$TITLE" --notes-file "$NOTES_FILE"
           fi
           gh release upload "$VERSION" "gw2pvo-layer-$VERSION.zip" "GW2PVO-$VERSION.zip" --clobber

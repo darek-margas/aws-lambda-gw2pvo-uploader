@@ -38,7 +38,19 @@ class GoodWeApi:
             status = int(status)
         except (TypeError, ValueError):
             pass
-        return labels.get(status, "Unknown")
+        if status in labels:
+            return labels[status]
+        # SEMS+ Web device status may be text rather than a number.
+        text = str(status or "").strip().lower()
+        for words, label in (
+            (("normal", "online", "generating", "running", "working"), "Normal"),
+            (("offline", "disconnect"), "Offline"),
+            (("wait", "standby"), "Waiting"),
+            (("fault", "error", "alarm"), "Fault"),
+        ):
+            if any(word in text for word in words):
+                return label
+        return "Unknown"
 
     @staticmethod
     def parseValue(value, unit):
@@ -450,9 +462,17 @@ class GoodWeApi:
             eday_inverters += self.parseValue(counters.get("proPvStatsToday"), "")
             result["etotal_kwh"] += self.parseValue(counters.get("proPvStatsTotal"), "")
 
+            # SEMS+ reports power in kW.
+            pac = self.parseValue(telemetry.get("pAc"), "") * 1000
+            if status == "Unknown":
+                logging.warning(
+                    "Unrecognised SEMS+ status %r for %s", device.get("status"), device["sn"]
+                )
+                if pac > 0:
+                    status = "Normal"
+
             if status == "Normal":
-                # SEMS+ reports power in kW.
-                result["pgrid_w"] += self.parseValue(telemetry.get("pAc"), "") * 1000
+                result["pgrid_w"] += pac
                 result["grid_voltage"] += self.parseValue(
                     telemetry.get("Vac", telemetry.get("PHASE-A:Vac")), ""
                 )
@@ -478,15 +498,17 @@ class GoodWeApi:
         if flow.get("pConsum") is not None:
             result["load"] = abs(self.parseValue(flow.get("pConsum"), "")) * 1000
 
+        flow_pv = self.parseValue(flow.get("pSystem", flow.get("pAc")), "") * 1000
         if count > 0:
             result["status"] = "Normal"
             result["grid_voltage"] /= count
             result["pv_voltage"] /= count
             result["itemp"] /= count
+            if result["pgrid_w"] <= 0 and flow_pv > 0:
+                result["pgrid_w"] = flow_pv
         else:
             result["status"] = statuses[0]
-            pv = flow.get("pSystem", flow.get("pAc"))
-            result["pgrid_w"] = self.parseValue(pv, "") * 1000
+            result["pgrid_w"] = flow_pv
 
         stats = {}
         try:
